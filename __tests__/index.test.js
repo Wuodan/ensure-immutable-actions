@@ -47,8 +47,6 @@ const {
   getWorkflowFiles,
   checkReleaseImmutability,
   checkAllActions,
-  getInput,
-  getBooleanInput,
   isFullSHA,
   formatActionReference
 } = await import('../src/index.js');
@@ -61,10 +59,10 @@ describe('Ensure Immutable Actions', () => {
     mockOctokit.rest.repos.getReleaseByTag.mockClear();
 
     // Set default inputs
+    mockCore.getBooleanInput.mockReturnValue(true);
     mockCore.getInput.mockImplementation(name => {
       const inputs = {
         'github-token': 'test-token',
-        'fail-on-mutable': 'true',
         workflows: '',
         'exclude-workflows': ''
       };
@@ -657,42 +655,6 @@ jobs:
     });
   });
 
-  describe('getInput and getBooleanInput', () => {
-    test('getInput should work with core.getInput', () => {
-      mockCore.getInput.mockReturnValue('test-value');
-      expect(getInput('test-input')).toBe('test-value');
-    });
-
-    test('getInput should fallback to environment variable', () => {
-      mockCore.getInput.mockReturnValue('');
-      process.env.INPUT_TEST_INPUT = 'env-value';
-      expect(getInput('test-input')).toBe('env-value');
-      delete process.env.INPUT_TEST_INPUT;
-    });
-
-    test('getBooleanInput should handle true values', () => {
-      mockCore.getInput.mockReturnValue('true');
-      expect(getBooleanInput('test')).toBe(true);
-
-      mockCore.getInput.mockReturnValue('1');
-      expect(getBooleanInput('test')).toBe(true);
-
-      mockCore.getInput.mockReturnValue('yes');
-      expect(getBooleanInput('test')).toBe(true);
-    });
-
-    test('getBooleanInput should handle false values', () => {
-      mockCore.getInput.mockReturnValue('false');
-      expect(getBooleanInput('test')).toBe(false);
-
-      mockCore.getInput.mockReturnValue('0');
-      expect(getBooleanInput('test')).toBe(false);
-
-      mockCore.getInput.mockReturnValue('');
-      expect(getBooleanInput('test')).toBe(false);
-    });
-  });
-
   describe('Action execution', () => {
     const testWorkspaceDir = '/tmp/test-action-workspace';
     const testWorkflowsDir = path.join(testWorkspaceDir, '.github', 'workflows');
@@ -741,10 +703,10 @@ jobs:
     });
 
     test('should fail with mutable actions when fail-on-mutable is true', async () => {
+      mockCore.getBooleanInput.mockReturnValue(true);
       mockCore.getInput.mockImplementation(name => {
         const inputs = {
-          'github-token': 'test-token',
-          'fail-on-mutable': 'true'
+          'github-token': 'test-token'
         };
         return inputs[name] || '';
       });
@@ -760,10 +722,10 @@ jobs:
     });
 
     test('should not fail with mutable actions when fail-on-mutable is false', async () => {
+      mockCore.getBooleanInput.mockReturnValue(false);
       mockCore.getInput.mockImplementation(name => {
         const inputs = {
-          'github-token': 'test-token',
-          'fail-on-mutable': 'false'
+          'github-token': 'test-token'
         };
         return inputs[name] || '';
       });
