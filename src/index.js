@@ -59,13 +59,6 @@ export function getUnsupportedReference(uses) {
     return null;
   }
 
-  if (uses.startsWith('./')) {
-    return {
-      unsupportedType: 'local-action',
-      message: 'Unsupported reference type: local action'
-    };
-  }
-
   if (uses.includes('://')) {
     const protocol = uses.split('://')[0];
     return {
@@ -87,12 +80,137 @@ export function shouldExcludeAction(owner) {
 }
 
 /**
+ * Resolve the metadata file for a local action directory
+ * @param {string} actionDir - Local action directory path
+ * @returns {string|null} Path to action metadata file or null if not found
+ */
+export function findLocalActionMetadataFile(actionDir) {
+  const candidates = ['action.yml', 'action.yaml'];
+  for (const filename of candidates) {
+    const metadataPath = path.join(actionDir, filename);
+    if (fs.existsSync(metadataPath)) {
+      return metadataPath;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a local action path from either the current action directory or workspace root
+ * @param {string} uses - Raw local action reference
+ * @param {string} workspaceDir - Repository workspace root
+ * @param {string} baseDir - Directory to resolve nested local actions from
+ * @returns {string} Normalized local action directory path
+ */
+export function resolveLocalActionDirectory(uses, workspaceDir, baseDir) {
+  const candidateDirs = [path.resolve(baseDir, uses), path.resolve(workspaceDir, uses)];
+
+  for (const candidateDir of candidateDirs) {
+    if (fs.existsSync(candidateDir)) {
+      return candidateDir;
+    }
+  }
+
+  return candidateDirs[0];
+}
+
+/**
+ * Create an unsupported local action record
+ * @param {string} uses - Raw local action reference
+ * @param {Object} metadata - Workflow metadata for the reference
+ * @param {string} message - Unsupported message
+ * @returns {Object} Unsupported action record
+ */
+export function createUnsupportedLocalAction(uses, metadata, message) {
+  return {
+    uses,
+    ...metadata,
+    supported: false,
+    unsupportedType: 'local-action',
+    message
+  };
+}
+
+/**
+ * Extract nested references from a local composite action
+ * @param {string} uses - Raw local action reference
+ * @param {Object} metadata - Workflow metadata for the reference
+ * @param {string} workspaceDir - Repository workspace root
+ * @param {string} baseDir - Directory to resolve nested local actions from
+ * @param {Set<string>} visitedLocalActions - Set of visited local action directories
+ * @returns {Array} Extracted nested action references or unsupported fallback
+ */
+export function extractActionsFromLocalAction(uses, metadata, workspaceDir, baseDir, visitedLocalActions = new Set()) {
+  const localActionDir = resolveLocalActionDirectory(uses, workspaceDir, baseDir);
+
+  if (visitedLocalActions.has(localActionDir)) {
+    core.warning(`Skipping recursive local action cycle: ${uses}`);
+    return [];
+  }
+
+  const metadataFile = findLocalActionMetadataFile(localActionDir);
+  if (!metadataFile) {
+    return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local action: action.yml not found')];
+  }
+
+  try {
+    const content = fs.readFileSync(metadataFile, 'utf8');
+    const actionDefinition = YAML.parse(content);
+    const actionType = actionDefinition?.runs?.using;
+
+    if (actionType !== 'composite') {
+      return [
+        createUnsupportedLocalAction(uses, metadata, `Unsupported local action type: ${actionType || 'unknown'}`)
+      ];
+    }
+
+    const nestedActions = [];
+    const nextVisitedLocalActions = new Set(visitedLocalActions);
+    nextVisitedLocalActions.add(localActionDir);
+
+    for (const step of actionDefinition?.runs?.steps || []) {
+      if (step?.uses) {
+        addParsedAction(
+          nestedActions,
+          step.uses,
+          {
+            ...metadata,
+            stepName: step.name || metadata.stepName || 'unnamed step'
+          },
+          {
+            workspaceDir,
+            baseDir: localActionDir,
+            visitedLocalActions: nextVisitedLocalActions
+          }
+        );
+      }
+    }
+
+    return nestedActions;
+  } catch (error) {
+    core.warning(`Failed to parse local action ${metadataFile}: ${error.message}`);
+    return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local action: failed to parse action.yml')];
+  }
+}
+
+/**
  * Add a workflow action reference to the collection, including unsupported references
  * @param {Array} actions - Mutable collection of extracted action references
  * @param {string} uses - Raw uses string from a workflow job or step
  * @param {Object} metadata - Additional metadata to attach to the extracted action
+ * @param {Object} options - Resolution options for local action recursion
  */
-export function addParsedAction(actions, uses, metadata) {
+export function addParsedAction(actions, uses, metadata, options = {}) {
+  const workspaceDir = options.workspaceDir || process.env.GITHUB_WORKSPACE || process.cwd();
+  const baseDir = options.baseDir || workspaceDir;
+  const visitedLocalActions = options.visitedLocalActions || new Set();
+
+  if (uses.startsWith('./')) {
+    actions.push(...extractActionsFromLocalAction(uses, metadata, workspaceDir, baseDir, visitedLocalActions));
+    return;
+  }
+
   const unsupported = getUnsupportedReference(uses);
   if (unsupported) {
     actions.push({
@@ -121,9 +239,10 @@ export function addParsedAction(actions, uses, metadata) {
 /**
  * Extract all action references from a workflow file
  * @param {string} workflowPath - Path to workflow YAML file
+ * @param {string} workspaceDir - Repository workspace root
  * @returns {Array} Array of action references
  */
-export function extractActionsFromWorkflow(workflowPath) {
+export function extractActionsFromWorkflow(workflowPath, workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()) {
   try {
     const content = fs.readFileSync(workflowPath, 'utf8');
     const workflow = YAML.parse(content);
@@ -134,20 +253,34 @@ export function extractActionsFromWorkflow(workflowPath) {
 
     for (const [jobName, job] of Object.entries(jobs)) {
       if (job?.uses) {
-        addParsedAction(actions, job.uses, {
-          workflowFile,
-          jobName
-        });
+        addParsedAction(
+          actions,
+          job.uses,
+          {
+            workflowFile,
+            jobName
+          },
+          {
+            workspaceDir
+          }
+        );
       }
 
       const steps = job?.steps || [];
       for (const step of steps) {
         if (step?.uses) {
-          addParsedAction(actions, step.uses, {
-            workflowFile,
-            jobName,
-            stepName: step.name || 'unnamed step'
-          });
+          addParsedAction(
+            actions,
+            step.uses,
+            {
+              workflowFile,
+              jobName,
+              stepName: step.name || 'unnamed step'
+            },
+            {
+              workspaceDir
+            }
+          );
         }
       }
     }
@@ -502,7 +635,7 @@ export async function run() {
     for (const workflowFile of workflowFiles) {
       const basename = path.basename(workflowFile);
       core.info(`Parsing workflow: ${basename}`);
-      const actions = extractActionsFromWorkflow(workflowFile);
+      const actions = extractActionsFromWorkflow(workflowFile, workspaceDir);
       core.info(`  Found ${actions.length} action(s)`);
       allActions.push(...actions);
     }
