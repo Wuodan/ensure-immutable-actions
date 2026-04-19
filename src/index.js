@@ -130,6 +130,34 @@ export function resolveLocalActionDirectory(uses, workspaceDir, baseDir) {
 }
 
 /**
+ * Resolve a local reusable workflow path from either the current workflow directory or workspace root
+ * @param {string} uses - Raw local workflow reference
+ * @param {string} workspaceDir - Repository workspace root
+ * @param {string} baseDir - Directory to resolve nested local workflows from
+ * @returns {string} Normalized local reusable workflow path
+ */
+export function resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir) {
+  const candidatePaths = [path.resolve(baseDir, uses), path.resolve(workspaceDir, uses)];
+
+  for (const candidatePath of candidatePaths) {
+    if (fs.existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return candidatePaths[0];
+}
+
+/**
+ * Check if a local uses reference points to a reusable workflow file
+ * @param {string} uses - Raw local uses reference
+ * @returns {boolean} True when the reference targets a local reusable workflow
+ */
+export function isLocalReusableWorkflowReference(uses) {
+  return typeof uses === 'string' && uses.startsWith('./') && (uses.endsWith('.yml') || uses.endsWith('.yaml'));
+}
+
+/**
  * Create an unsupported local action record
  * @param {string} uses - Raw local action reference
  * @param {Object} metadata - Workflow metadata for the reference
@@ -209,6 +237,78 @@ export function extractActionsFromLocalAction(uses, metadata, workspaceDir, base
 }
 
 /**
+ * Extract nested references from a local reusable workflow
+ * @param {string} uses - Raw local workflow reference
+ * @param {Object} metadata - Workflow metadata for the reference
+ * @param {string} workspaceDir - Repository workspace root
+ * @param {string} baseDir - Directory to resolve nested local references from
+ * @returns {Array} Extracted nested action references
+ */
+export function extractActionsFromLocalReusableWorkflow(uses, metadata, workspaceDir, baseDir) {
+  const workflowPath = resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir);
+  if (!fs.existsSync(workflowPath)) {
+    return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local reusable workflow: file not found')];
+  }
+
+  try {
+    const content = fs.readFileSync(workflowPath, 'utf8');
+    const workflow = YAML.parse(content);
+    const nestedActions = [];
+    const jobs = workflow?.jobs || {};
+    const workflowFile = path.basename(workflowPath);
+    const workflowBaseDir = path.dirname(workflowPath);
+
+    for (const [jobName, job] of Object.entries(jobs)) {
+      if (job?.uses) {
+        addParsedAction(
+          nestedActions,
+          job.uses,
+          {
+            workflowFile,
+            jobName,
+            entrypointUses: metadata.entrypointUses || uses,
+            sourceWorkflowFile: metadata.sourceWorkflowFile || metadata.workflowFile,
+            sourceJobName: metadata.sourceJobName || metadata.jobName,
+            sourceStepName: metadata.sourceStepName || metadata.stepName
+          },
+          {
+            workspaceDir,
+            baseDir: workflowBaseDir
+          }
+        );
+      }
+
+      for (const step of job?.steps || []) {
+        if (step?.uses) {
+          addParsedAction(
+            nestedActions,
+            step.uses,
+            {
+              workflowFile,
+              jobName,
+              stepName: step.name || 'unnamed step',
+              entrypointUses: metadata.entrypointUses || uses,
+              sourceWorkflowFile: metadata.sourceWorkflowFile || metadata.workflowFile,
+              sourceJobName: metadata.sourceJobName || metadata.jobName,
+              sourceStepName: metadata.sourceStepName || metadata.stepName
+            },
+            {
+              workspaceDir,
+              baseDir: workflowBaseDir
+            }
+          );
+        }
+      }
+    }
+
+    return nestedActions;
+  } catch (error) {
+    core.warning(`Failed to parse local reusable workflow ${workflowPath}: ${error.message}`);
+    return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local reusable workflow: failed to parse file')];
+  }
+}
+
+/**
  * Add a workflow action reference to the collection, including unsupported references
  * @param {Array} actions - Mutable collection of extracted action references
  * @param {string} uses - Raw uses string from a workflow job or step
@@ -221,6 +321,10 @@ export function addParsedAction(actions, uses, metadata, options = {}) {
   const visitedLocalActions = options.visitedLocalActions || new Set();
 
   if (uses.startsWith('./')) {
+    if (isLocalReusableWorkflowReference(uses)) {
+      actions.push(...extractActionsFromLocalReusableWorkflow(uses, metadata, workspaceDir, baseDir));
+      return;
+    }
     actions.push(...extractActionsFromLocalAction(uses, metadata, workspaceDir, baseDir, visitedLocalActions));
     return;
   }
