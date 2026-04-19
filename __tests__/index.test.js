@@ -1826,6 +1826,81 @@ runs:
       expect(JSON.parse(unsupportedCall[1])).toHaveLength(0);
     });
 
+    test('should recurse through first-party reusable workflows while keeping first-party checks excluded by default', async () => {
+      fs.writeFileSync(
+        path.join(testWorkflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  test:
+    uses: actions/example/.github/workflows/reusable.yml@v1
+`
+      );
+
+      mockOctokit.rest.repos.getContent.mockImplementation(async ({ owner, repo, path: remotePath }) => {
+        if (owner === 'actions' && repo === 'example' && remotePath === '.github/workflows/reusable.yml') {
+          return {
+            data: {
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(
+                `
+name: Reusable
+on:
+  workflow_call:
+jobs:
+  nested:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: third-party/example-action@1234567890abcdef1234567890abcdef12345678
+`,
+                'utf8'
+              ).toString('base64')
+            }
+          };
+        }
+
+        if (owner === 'third-party' && repo === 'example-action' && remotePath === 'action.yml') {
+          return {
+            data: {
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(
+                `
+name: Example Action
+runs:
+  using: node24
+  main: index.js
+`,
+                'utf8'
+              ).toString('base64')
+            }
+          };
+        }
+
+        const error = new Error('Not Found');
+        error.status = 404;
+        throw error;
+      });
+
+      await run();
+
+      const immutableCall = mockCore.setOutput.mock.calls.find(c => c[0] === 'immutable-actions');
+      const immutableOutput = JSON.parse(immutableCall[1]);
+      expect(immutableOutput).toHaveLength(1);
+      expect(immutableOutput[0].uses).toBe('third-party/example-action@1234567890abcdef1234567890abcdef12345678');
+
+      const firstPartyCall = mockCore.setOutput.mock.calls.find(c => c[0] === 'first-party-actions');
+      const firstPartyOutput = JSON.parse(firstPartyCall[1]);
+      expect(firstPartyOutput).toHaveLength(1);
+      expect(firstPartyOutput[0].uses).toBe('actions/example/.github/workflows/reusable.yml@v1');
+
+      expect(mockOctokit.rest.repos.getReleaseByTag).not.toHaveBeenCalled();
+      const allPassedCall = mockCore.setOutput.mock.calls.find(c => c[0] === 'all-passed');
+      expect(allPassedCall).toEqual(['all-passed', true]);
+    });
+
     test('should check first-party actions when include-first-party is true', async () => {
       mockCore.getBooleanInput.mockImplementation(name => {
         if (name === 'fail-on-mutable') return true;
