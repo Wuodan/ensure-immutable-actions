@@ -111,7 +111,7 @@ export function findLocalActionMetadataFile(actionDir) {
 }
 
 /**
- * Resolve a local action path from either the current action directory or workspace root
+ * Resolve a local action path from the current base directory with workspace-root fallback
  * @param {string} uses - Raw local action reference
  * @param {string} workspaceDir - Repository workspace root
  * @param {string} baseDir - Directory to resolve nested local actions from
@@ -130,14 +130,13 @@ export function resolveLocalActionDirectory(uses, workspaceDir, baseDir) {
 }
 
 /**
- * Resolve a local reusable workflow path from either the current workflow directory or workspace root
+ * Resolve a local reusable workflow path from the workspace root
  * @param {string} uses - Raw local workflow reference
  * @param {string} workspaceDir - Repository workspace root
- * @param {string} baseDir - Directory to resolve nested local workflows from
  * @returns {string} Normalized local reusable workflow path
  */
-export function resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir) {
-  const candidatePaths = [path.resolve(baseDir, uses), path.resolve(workspaceDir, uses)];
+export function resolveLocalReusableWorkflowPath(uses, workspaceDir) {
+  const candidatePaths = [path.resolve(workspaceDir, uses)];
 
   for (const candidatePath of candidatePaths) {
     if (fs.existsSync(candidatePath)) {
@@ -273,7 +272,7 @@ export function extractActionsFromLocalReusableWorkflow(
   baseDir,
   excludeWorkflowPatterns = []
 ) {
-  const workflowPath = resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir);
+  const workflowPath = resolveLocalReusableWorkflowPath(uses, workspaceDir);
   if (!fs.existsSync(workflowPath)) {
     return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local reusable workflow: file not found')];
   }
@@ -287,7 +286,6 @@ export function extractActionsFromLocalReusableWorkflow(
     if (isExcludedWorkflow(workflowFile, excludeWorkflowPatterns)) {
       return [];
     }
-    const workflowBaseDir = path.dirname(workflowPath);
 
     for (const [jobName, job] of Object.entries(jobs)) {
       if (job?.uses) {
@@ -304,7 +302,6 @@ export function extractActionsFromLocalReusableWorkflow(
           },
           {
             workspaceDir,
-            baseDir: workflowBaseDir,
             excludeWorkflowPatterns
           }
         );
@@ -326,7 +323,6 @@ export function extractActionsFromLocalReusableWorkflow(
             },
             {
               workspaceDir,
-              baseDir: workflowBaseDir,
               excludeWorkflowPatterns
             }
           );

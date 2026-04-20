@@ -58,6 +58,7 @@ const {
   getWorkflowFiles,
   isLocalReusableWorkflowReference,
   isReusableWorkflowReference,
+  resolveLocalActionDirectory,
   resolveLocalReusableWorkflowPath,
   checkReleaseImmutability,
   checkAllActions,
@@ -206,6 +207,22 @@ describe('Ensure Immutable Actions', () => {
       const resolved = resolveLocalReusableWorkflowPath('./.github/workflows/child.yml', workspaceDir, workflowsDir);
 
       expect(resolved).toBe(path.join(workspaceDir, '.github', 'workflows', 'child.yml'));
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('resolveLocalActionDirectory', () => {
+    test('should resolve workflow local actions from the workspace root', () => {
+      const workspaceDir = '/tmp/test-resolve-local-action-workflow';
+      const rootActionDir = workspaceDir;
+
+      fs.mkdirSync(path.join(workspaceDir, '.github', 'workflows'), { recursive: true });
+      fs.writeFileSync(path.join(rootActionDir, 'action.yml'), 'name: Root Action');
+
+      const resolved = resolveLocalActionDirectory('./', workspaceDir, workspaceDir);
+
+      expect(resolved).toBe(rootActionDir);
 
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     });
@@ -584,6 +601,51 @@ runs:
         owner: 'nested-owner',
         repo: 'nested-action',
         ref: 'v2'
+      });
+      expect(mockCore.warning).not.toHaveBeenCalledWith(expect.stringContaining('action.yml not found'));
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    test('should resolve local workflow actions from the repository root', () => {
+      const workspaceDir = '/tmp/test-workflow-root-local-action';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workspaceDir, 'action.yml'),
+        `
+name: Root Action
+runs:
+  using: composite
+  steps:
+    - uses: nested-owner/nested-action@v1
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir);
+
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({
+        uses: 'nested-owner/nested-action@v1',
+        supported: true,
+        owner: 'nested-owner',
+        repo: 'nested-action',
+        ref: 'v1'
       });
       expect(mockCore.warning).not.toHaveBeenCalledWith(expect.stringContaining('action.yml not found'));
 
