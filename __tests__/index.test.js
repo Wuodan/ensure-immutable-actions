@@ -56,7 +56,9 @@ const {
   formatTraversalHint,
   getUnsupportedReference,
   getWorkflowFiles,
+  isLocalReusableWorkflowReference,
   isReusableWorkflowReference,
+  resolveLocalReusableWorkflowPath,
   checkReleaseImmutability,
   checkAllActions,
   isFullSHA,
@@ -180,6 +182,32 @@ describe('Ensure Immutable Actions', () => {
           actionPath: 'path/to/action'
         })
       ).toBe(false);
+    });
+  });
+
+  describe('isLocalReusableWorkflowReference', () => {
+    test('should detect local reusable workflow paths', () => {
+      expect(isLocalReusableWorkflowReference('./.github/workflows/reusable.yml')).toBe(true);
+    });
+
+    test('should not treat local action directories as reusable workflows', () => {
+      expect(isLocalReusableWorkflowReference('./.github/actions/composite')).toBe(false);
+    });
+  });
+
+  describe('resolveLocalReusableWorkflowPath', () => {
+    test('should fall back to the workspace root for local reusable workflow references', () => {
+      const workspaceDir = '/tmp/test-resolve-local-reusable-workflow';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.writeFileSync(path.join(workflowsDir, 'child.yml'), 'name: Child');
+
+      const resolved = resolveLocalReusableWorkflowPath('./.github/workflows/child.yml', workspaceDir, workflowsDir);
+
+      expect(resolved).toBe(path.join(workspaceDir, '.github', 'workflows', 'child.yml'));
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
     });
   });
 
@@ -491,6 +519,170 @@ runs:
         unsupportedType: 'local-action',
         message: 'Unsupported local action type: node24'
       });
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    test('should recurse into local reusable workflows', () => {
+      const workspaceDir = '/tmp/test-workflow-local-reusable';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+      const localActionDir = path.join(workspaceDir, '.github', 'actions', 'composite');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.mkdirSync(localActionDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  reusable:
+    uses: ./.github/workflows/test-suite.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'test-suite.yml'),
+        `
+name: Test Suite
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/composite
+`
+      );
+
+      fs.writeFileSync(
+        path.join(localActionDir, 'action.yml'),
+        `
+name: Composite
+runs:
+  using: composite
+  steps:
+    - uses: nested-owner/nested-action@v2
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir);
+
+      expect(actions).toHaveLength(2);
+      expect(actions[0]).toMatchObject({
+        uses: 'actions/checkout@v4',
+        supported: true,
+        owner: 'actions',
+        repo: 'checkout',
+        ref: 'v4'
+      });
+      expect(actions[1]).toMatchObject({
+        uses: 'nested-owner/nested-action@v2',
+        supported: true,
+        owner: 'nested-owner',
+        repo: 'nested-action',
+        ref: 'v2'
+      });
+      expect(mockCore.warning).not.toHaveBeenCalledWith(expect.stringContaining('action.yml not found'));
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    test('should recurse into nested local reusable workflows', () => {
+      const workspaceDir = '/tmp/test-workflow-nested-local-reusable';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  reusable:
+    uses: ./.github/workflows/parent.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'parent.yml'),
+        `
+name: Parent
+on:
+  workflow_call:
+jobs:
+  child:
+    uses: ./.github/workflows/child.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'child.yml'),
+        `
+name: Child
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: child-owner/child-action@v3
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir);
+
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({
+        uses: 'child-owner/child-action@v3',
+        supported: true,
+        owner: 'child-owner',
+        repo: 'child-action',
+        ref: 'v3'
+      });
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    test('should skip excluded nested local reusable workflows', () => {
+      const workspaceDir = '/tmp/test-workflow-excluded-nested-local-reusable';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  reusable:
+    uses: ./.github/workflows/example.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'example.yml'),
+        `
+name: Example
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: child-owner/child-action@v3
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir, {
+        excludeWorkflowPatterns: ['example.yml']
+      });
+
+      expect(actions).toHaveLength(0);
 
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     });
@@ -1815,9 +2007,34 @@ runs:
 `
       );
 
+      mockOctokit.rest.repos.getContent.mockImplementation(async ({ owner, repo, path: remotePath }) => {
+        if (owner === 'owner' && repo === 'repo' && remotePath === 'action.yml') {
+          return {
+            data: {
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from(
+                `
+name: Terminal Action
+runs:
+  using: node24
+  main: index.js
+`,
+                'utf8'
+              ).toString('base64')
+            }
+          };
+        }
+
+        const error = new Error('Not Found');
+        error.status = 404;
+        throw error;
+      });
+
       await run();
 
-      expect(mockCore.setOutput).toHaveBeenCalledWith('all-passed', true);
+      const allPassedCall = mockCore.setOutput.mock.calls.find(c => c[0] === 'all-passed');
+      expect(allPassedCall).toEqual(['all-passed', true]);
       const immutableCall = mockCore.setOutput.mock.calls.find(c => c[0] === 'immutable-actions');
       const immutableOutput = JSON.parse(immutableCall[1]);
       expect(immutableOutput).toHaveLength(1);
