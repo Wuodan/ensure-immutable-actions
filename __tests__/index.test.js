@@ -193,6 +193,10 @@ describe('Ensure Immutable Actions', () => {
     test('should not treat local action directories as reusable workflows', () => {
       expect(isLocalReusableWorkflowReference('./.github/actions/composite')).toBe(false);
     });
+
+    test('should not treat yml files outside .github/workflows as reusable workflows', () => {
+      expect(isLocalReusableWorkflowReference('./some-dir/workflow.yml')).toBe(false);
+    });
   });
 
   describe('resolveLocalReusableWorkflowPath', () => {
@@ -683,6 +687,55 @@ jobs:
       });
 
       expect(actions).toHaveLength(0);
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    test('should detect and skip circular local reusable workflow references', () => {
+      const workspaceDir = '/tmp/test-workflow-circular-local-reusable';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  reusable:
+    uses: ./.github/workflows/a.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'a.yml'),
+        `
+name: A
+on:
+  workflow_call:
+jobs:
+  call-b:
+    uses: ./.github/workflows/b.yml
+`
+      );
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'b.yml'),
+        `
+name: B
+on:
+  workflow_call:
+jobs:
+  call-a:
+    uses: ./.github/workflows/a.yml
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir);
+
+      expect(actions).toHaveLength(0);
+      expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Skipping recursive local workflow cycle'));
 
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     });

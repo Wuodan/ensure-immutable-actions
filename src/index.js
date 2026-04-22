@@ -138,9 +138,10 @@ export function resolveLocalActionDirectory(uses, workspaceDir, baseDir) {
  */
 export function resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir) {
   const candidatePaths = [path.resolve(baseDir, uses), path.resolve(workspaceDir, uses)];
+  const normalizedWorkspace = path.resolve(workspaceDir);
 
   for (const candidatePath of candidatePaths) {
-    if (fs.existsSync(candidatePath)) {
+    if (candidatePath.startsWith(normalizedWorkspace + path.sep) && fs.existsSync(candidatePath)) {
       return candidatePath;
     }
   }
@@ -176,7 +177,11 @@ export function isExcludedWorkflow(workflowFile, excludeWorkflowPatterns = []) {
  * @returns {boolean} True when the reference targets a local reusable workflow
  */
 export function isLocalReusableWorkflowReference(uses) {
-  return typeof uses === 'string' && uses.startsWith('./') && (uses.endsWith('.yml') || uses.endsWith('.yaml'));
+  return (
+    typeof uses === 'string' &&
+    uses.startsWith('./.github/workflows/') &&
+    (uses.endsWith('.yml') || uses.endsWith('.yaml'))
+  );
 }
 
 /**
@@ -271,11 +276,17 @@ export function extractActionsFromLocalReusableWorkflow(
   metadata,
   workspaceDir,
   baseDir,
-  excludeWorkflowPatterns = []
+  excludeWorkflowPatterns = [],
+  visitedWorkflows = new Set()
 ) {
   const workflowPath = resolveLocalReusableWorkflowPath(uses, workspaceDir, baseDir);
   if (!fs.existsSync(workflowPath)) {
     return [createUnsupportedLocalAction(uses, metadata, 'Unsupported local reusable workflow: file not found')];
+  }
+
+  if (visitedWorkflows.has(workflowPath)) {
+    core.warning(`Skipping recursive local workflow cycle: ${uses}`);
+    return [];
   }
 
   try {
@@ -288,6 +299,8 @@ export function extractActionsFromLocalReusableWorkflow(
       return [];
     }
     const workflowBaseDir = path.dirname(workflowPath);
+    const nextVisitedWorkflows = new Set(visitedWorkflows);
+    nextVisitedWorkflows.add(workflowPath);
 
     for (const [jobName, job] of Object.entries(jobs)) {
       if (job?.uses) {
@@ -305,7 +318,8 @@ export function extractActionsFromLocalReusableWorkflow(
           {
             workspaceDir,
             baseDir: workflowBaseDir,
-            excludeWorkflowPatterns
+            excludeWorkflowPatterns,
+            visitedWorkflows: nextVisitedWorkflows
           }
         );
       }
@@ -327,7 +341,8 @@ export function extractActionsFromLocalReusableWorkflow(
             {
               workspaceDir,
               baseDir: workflowBaseDir,
-              excludeWorkflowPatterns
+              excludeWorkflowPatterns,
+              visitedWorkflows: nextVisitedWorkflows
             }
           );
         }
@@ -353,11 +368,19 @@ export function addParsedAction(actions, uses, metadata, options = {}) {
   const baseDir = options.baseDir || workspaceDir;
   const visitedLocalActions = options.visitedLocalActions || new Set();
   const excludeWorkflowPatterns = options.excludeWorkflowPatterns || [];
+  const visitedWorkflows = options.visitedWorkflows || new Set();
 
   if (uses.startsWith('./')) {
     if (isLocalReusableWorkflowReference(uses)) {
       actions.push(
-        ...extractActionsFromLocalReusableWorkflow(uses, metadata, workspaceDir, baseDir, excludeWorkflowPatterns)
+        ...extractActionsFromLocalReusableWorkflow(
+          uses,
+          metadata,
+          workspaceDir,
+          baseDir,
+          excludeWorkflowPatterns,
+          visitedWorkflows
+        )
       );
       return;
     }
