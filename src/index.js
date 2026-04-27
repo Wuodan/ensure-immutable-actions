@@ -405,6 +405,13 @@ export function addParsedAction(actions, uses, metadata, options = {}) {
     return;
   }
 
+  if (
+    isReusableWorkflowReference(parsed) &&
+    isExcludedWorkflow(path.posix.basename(parsed.actionPath), excludeWorkflowPatterns)
+  ) {
+    return;
+  }
+
   actions.push({
     uses,
     ...parsed,
@@ -614,7 +621,10 @@ export async function expandRemoteReusableWorkflow(octokit, action, content, opt
             sourceJobName: action.sourceJobName || action.jobName,
             sourceStepName: action.sourceStepName || action.stepName
           },
-          { workspaceDir: options.workspaceDir }
+          {
+            workspaceDir: options.workspaceDir,
+            excludeWorkflowPatterns: options.excludeWorkflowPatterns
+          }
         );
       }
 
@@ -637,7 +647,8 @@ export async function expandRemoteReusableWorkflow(octokit, action, content, opt
               sourceStepName: action.sourceStepName || action.stepName
             },
             {
-              workspaceDir: options.workspaceDir
+              workspaceDir: options.workspaceDir,
+              excludeWorkflowPatterns: options.excludeWorkflowPatterns
             }
           );
         }
@@ -700,7 +711,8 @@ export async function expandRemoteCompositeAction(octokit, action, content, opti
           sourceStepName: action.sourceStepName || action.stepName
         },
         {
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          excludeWorkflowPatterns: options.excludeWorkflowPatterns
         }
       );
     }
@@ -852,18 +864,15 @@ export function getWorkflowFiles(workflowsInput, excludeWorkflowsInput, workspac
   } else {
     // Get all workflow files
     workflowFiles = allWorkflowFiles.map(f => path.join(workflowsDir, f));
+  }
 
-    // Apply exclusions (exact names or glob patterns)
-    if (excludeWorkflowsInput) {
-      const excludePatterns = excludeWorkflowsInput
-        .split(',')
-        .map(w => w.trim())
-        .filter(Boolean);
-      workflowFiles = workflowFiles.filter(f => {
-        const basename = path.basename(f);
-        return !excludePatterns.some(pattern => matchesPattern(basename, pattern));
-      });
-    }
+  // Apply exclusions (exact names or glob patterns)
+  if (excludeWorkflowsInput) {
+    const excludePatterns = parseWorkflowPatterns(excludeWorkflowsInput);
+    workflowFiles = workflowFiles.filter(f => {
+      const basename = path.basename(f);
+      return !excludePatterns.some(pattern => matchesPattern(basename, pattern));
+    });
   }
 
   return workflowFiles;
@@ -1318,6 +1327,7 @@ export async function run() {
 
     const expandedNonFirstPartyActions = await expandActionReferences(octokit, actionsToExpand, {
       workspaceDir,
+      excludeWorkflowPatterns,
       expansionCache: new Map(),
       expansionStack: new Set()
     });

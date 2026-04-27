@@ -774,6 +774,32 @@ jobs:
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     });
 
+    test('should skip excluded remote reusable workflows during extraction', () => {
+      const workspaceDir = '/tmp/test-workflow-excluded-remote-reusable';
+      const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
+
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(workflowsDir, 'ci.yml'),
+        `
+name: CI
+on: push
+jobs:
+  reusable:
+    uses: owner/repo/.github/workflows/example.yml@v1
+`
+      );
+
+      const actions = extractActionsFromWorkflow(path.join(workflowsDir, 'ci.yml'), workspaceDir, {
+        excludeWorkflowPatterns: ['example.yml']
+      });
+
+      expect(actions).toHaveLength(0);
+
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
     test('should detect and skip circular local reusable workflow references', () => {
       const workspaceDir = '/tmp/test-workflow-circular-local-reusable';
       const workflowsDir = path.join(workspaceDir, '.github', 'workflows');
@@ -869,6 +895,13 @@ jobs:
       expect(files.some(f => f.endsWith('ci.yml'))).toBe(true);
       expect(files.some(f => f.endsWith('deploy.yml'))).toBe(true);
       expect(files.some(f => f.endsWith('test.yaml'))).toBe(false);
+    });
+
+    test('should apply exclude-workflows even when workflows is specified', () => {
+      const files = getWorkflowFiles('ci.yml,deploy.yml', 'deploy.yml', testWorkspaceDir);
+      expect(files).toHaveLength(1);
+      expect(files.some(f => f.endsWith('ci.yml'))).toBe(true);
+      expect(files.some(f => f.endsWith('deploy.yml'))).toBe(false);
     });
 
     test('should warn when specified workflow not found', () => {
@@ -1732,6 +1765,84 @@ runs:
         workflowFile: 'ci.yml',
         entrypointUses: 'owner/repo/.github/workflows/reusable.yml@v1',
         jobName: 'nested',
+        stepName: 'unnamed step',
+        sourceWorkflowFile: 'ci.yml',
+        sourceJobName: 'call-reusable',
+        supported: true
+      });
+    });
+
+    test('should respect excluded workflows throughout remote reusable traversal', async () => {
+      mockOctokit.rest.repos.getContent.mockImplementation(async ({ path: remotePath }) => {
+        const files = {
+          '.github/workflows/reusable.yml': `
+name: Reusable
+on:
+  workflow_call:
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/direct-action@v2
+  nested:
+    uses: owner/repo/.github/workflows/excluded-child.yml@v1
+`,
+          'action.yml': `
+name: Nested Action
+runs:
+  using: node24
+  main: index.js
+`
+        };
+
+        if (!files[remotePath]) {
+          const error = new Error('Not Found');
+          error.status = 404;
+          throw error;
+        }
+
+        return {
+          data: {
+            type: 'file',
+            encoding: 'base64',
+            content: Buffer.from(files[remotePath], 'utf8').toString('base64')
+          }
+        };
+      });
+
+      const actions = [
+        {
+          uses: 'owner/repo/.github/workflows/reusable.yml@v1',
+          owner: 'owner',
+          repo: 'repo',
+          actionPath: '.github/workflows/reusable.yml',
+          ref: 'v1',
+          workflowFile: 'ci.yml',
+          sourceWorkflowFile: 'ci.yml',
+          sourceJobName: 'call-reusable',
+          supported: true,
+          isFirstParty: false
+        }
+      ];
+
+      const result = await expandActionReferences(mockOctokit, actions, {
+        workspaceDir: '/tmp/workspace',
+        excludeWorkflowPatterns: ['excluded-child.yml'],
+        expansionCache: new Map(),
+        expansionStack: new Set()
+      });
+
+      expect(result).toHaveLength(2);
+      expect(result[0].uses).toBe('owner/repo/.github/workflows/reusable.yml@v1');
+      expect(result[1]).toMatchObject({
+        uses: 'owner/direct-action@v2',
+        owner: 'owner',
+        repo: 'direct-action',
+        actionPath: '',
+        ref: 'v2',
+        workflowFile: 'ci.yml',
+        entrypointUses: 'owner/repo/.github/workflows/reusable.yml@v1',
+        jobName: 'direct',
         stepName: 'unnamed step',
         sourceWorkflowFile: 'ci.yml',
         sourceJobName: 'call-reusable',
