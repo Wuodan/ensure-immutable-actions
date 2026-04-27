@@ -112,6 +112,16 @@ describe('Ensure Immutable Actions', () => {
       });
     });
 
+    test('should parse action with multi-segment path', () => {
+      const result = parseActionReference('owner/repo/path/to/action@v1');
+      expect(result).toEqual({
+        owner: 'owner',
+        repo: 'repo',
+        actionPath: 'path/to/action',
+        ref: 'v1'
+      });
+    });
+
     test('should parse action with full 40-char SHA reference', () => {
       // GitHub Actions requires full 40-char SHA for commit references
       const result = parseActionReference('actions/checkout@1234567890abcdef1234567890abcdef12345678');
@@ -138,6 +148,10 @@ describe('Ensure Immutable Actions', () => {
       expect(parseActionReference('no-at-sign')).toBeNull();
       expect(parseActionReference('')).toBeNull();
       expect(parseActionReference(null)).toBeNull();
+      expect(parseActionReference('owner/repo@')).toBeNull();
+      expect(parseActionReference('@ref')).toBeNull();
+      expect(parseActionReference('owner//@ref')).toBeNull();
+      expect(parseActionReference('owner/repo/path/@ref')).toBeNull();
     });
   });
 
