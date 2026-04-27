@@ -40,13 +40,26 @@ export function parseActionReference(uses) {
     return null;
   }
 
-  // Parse format: owner/repo@ref or owner/repo/path@ref
-  const match = uses.match(/^([^/]+)\/([^/@]+)(?:\/(.+))?@(.+)$/);
-  if (!match) {
+  // Parse format: owner/repo@ref or owner/repo/path@ref without regex backtracking
+  const atIndex = uses.lastIndexOf('@');
+  if (atIndex <= 0 || atIndex === uses.length - 1) {
     return null;
   }
 
-  const [, owner, repo, actionPath = '', ref] = match;
+  const repoPath = uses.slice(0, atIndex);
+  const ref = uses.slice(atIndex + 1);
+  const pathParts = repoPath.split('/');
+
+  if (pathParts.length < 2) {
+    return null;
+  }
+
+  const [owner, repo, ...actionPathParts] = pathParts;
+  if (!owner || !repo || repo.includes('@') || actionPathParts.some(part => part.length === 0)) {
+    return null;
+  }
+
+  const actionPath = actionPathParts.join('/');
   return { owner, repo, actionPath, ref };
 }
 
